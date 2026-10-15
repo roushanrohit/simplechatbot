@@ -1,7 +1,8 @@
-.gradle/
-build/
-out/
-.idea/
+/src/main/frontend/generated/
+/.gradle/
+/build/
+/target/
+/.idea/
 *.iml
 .DS_Store
 .env
