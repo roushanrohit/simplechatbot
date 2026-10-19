@@ -1,8 +1,13 @@
 package com.chatbot.simplechatbot.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.langchain4j.agent.tool.ToolSpecifications;
+import dev.langchain4j.agent.tool.ToolExecutionRequest;
+import dev.langchain4j.agent.tool.ToolSpecification;
 import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.SystemMessage;
-import dev.langchain4j.data.message.UserMessage;
+import dev.langchain4j.data.message.ToolExecutionResultMessage;
 import dev.langchain4j.model.chat.ChatModel;
 import dev.langchain4j.model.chat.request.ChatRequest;
 import dev.langchain4j.model.chat.response.ChatResponse;
@@ -11,72 +16,83 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Locale;
 
 @Service
 public class ChatService {
 
     private static final String MODEL = "gpt-4.1-mini";
-
     private static final String DEFAULT_SYSTEM_MESSAGE =
-            "You are a helpful assistant.";
+            "You are a helpful assistant. "
+                    + "When asked for an account's total transaction amount, "
+                    + "use the get_total_amount tool. "
+                    + "Do not invent transaction amounts.";
 
-    private static final String OFFICE_SYSTEM_MESSAGE =
-            "You are a helpful assistant. After every response, "
-                    + "remind the user to exercise and suggest a different "
-                    + "exercise each time.";
-
+    private static final int MAX_TOOL_ROUNDS = 5;
     private final ChatModel model;
+    private final TransactionTool transactionTools;
+    private final ObjectMapper objectMapper;
+    private final List<ToolSpecification> toolSpecifications;
 
-    public ChatService() {
+    public ChatService(TransactionTool transactionTools, ObjectMapper objectMapper) {
+        this.transactionTools = transactionTools;
+        this.objectMapper = objectMapper;
         String apiKey = System.getenv("OPENAI_API_KEY");
-
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException(
                     "OPENAI_API_KEY environment variable is not set"
             );
         }
-
-        // builder design pattern
-        this.model = OpenAiChatModel.builder()
-                .apiKey(apiKey)
-                .modelName(MODEL)
-                .build();
+        this.model = OpenAiChatModel.builder().apiKey(apiKey).modelName(MODEL).build();
+        this.toolSpecifications = ToolSpecifications.toolSpecificationsFrom(transactionTools);
     }
 
     public String chat(List<ChatMessage> history) {
 
-        // Find the latest user message
-        String latestUserMessage = history.stream()
-                .filter(UserMessage.class::isInstance)
-                .map(UserMessage.class::cast)
-                .map(UserMessage::singleText)
-                .reduce((first, second) -> second)
-                .orElse("");
-
-        // Select the system prompt dynamically
-        String systemMessage;
-
-        if (latestUserMessage.toLowerCase(Locale.ROOT).matches("(?s).*\\boffice\\b.*")) {
-            systemMessage = OFFICE_SYSTEM_MESSAGE;
-        } else {
-            systemMessage = DEFAULT_SYSTEM_MESSAGE;
-        }
-
-        // Add the system prompt before the conversation history
         List<ChatMessage> messages = new ArrayList<>();
-
-        messages.add(SystemMessage.from(systemMessage));
+        messages.add(SystemMessage.from(DEFAULT_SYSTEM_MESSAGE));
         messages.addAll(history);
 
-        // Build the LangChain4j request
-        ChatRequest request = ChatRequest.builder()
-                .messages(messages)
-                .build();
+        for (int round = 0; round < MAX_TOOL_ROUNDS; round++) {
+            ChatRequest request = ChatRequest.builder().messages(messages)
+                    .toolSpecifications(toolSpecifications).build();
+            ChatResponse response = model.chat(request);
 
-        // Call the LLM
-        ChatResponse response = model.chat(request);
+            var aiMessage = response.aiMessage();
+            // No tool call: return the final answer.
+            if (aiMessage.toolExecutionRequests() == null
+                    || aiMessage.toolExecutionRequests().isEmpty()) {
+                return aiMessage.text();
+            }
 
-        return response.aiMessage().text();
+            // Add the assistant's tool-call message to the history.
+            messages.add(aiMessage);
+            // Execute every tool requested by the model.
+            for (ToolExecutionRequest toolRequest : aiMessage.toolExecutionRequests()) {
+                String result = executeTool(toolRequest);
+                messages.add(ToolExecutionResultMessage.from(toolRequest, result));
+            }
+        }
+
+        throw new IllegalStateException("Maximum tool-calling rounds exceeded");
+    }
+
+    private String executeTool(ToolExecutionRequest toolRequest) {
+
+        // The @Tool annotation normally exposes the Java method name.
+        // If you configure a different tool name, update this mapping.
+        if ("getTotalAmount".equals(toolRequest.name()) || "get_total_amount".equals(toolRequest.name())) {
+            try {
+                JsonNode arguments = objectMapper.readTree(toolRequest.arguments());
+                JsonNode accountIdNode = arguments.get("account_id");
+                if (accountIdNode == null || !accountIdNode.isTextual() || accountIdNode.asText().isBlank()) {
+                    return "Invalid or missing account_id argument.";
+                }
+                return transactionTools.getTotalAmount(accountIdNode.asText());
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to execute transaction tool", e);
+            }
+        }
+
+        throw new IllegalArgumentException("Unknown tool: " + toolRequest.name());
     }
 }
