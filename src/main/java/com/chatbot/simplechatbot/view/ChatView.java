@@ -11,6 +11,7 @@ import dev.langchain4j.data.message.ChatMessage;
 import dev.langchain4j.data.message.UserMessage;
 import dev.langchain4j.data.message.AiMessage;
 
+import com.vaadin.flow.component.html.Image;
 import com.chatbot.simplechatbot.service.ChatService;
 
 import java.util.ArrayList;
@@ -49,42 +50,48 @@ public class ChatView extends VerticalLayout {
         sendButton.addClickListener(event -> sendMessage());
 
         // Pressing Enter also sends the message
-        input.addKeyPressListener(
-                com.vaadin.flow.component.Key.ENTER,
-                event -> sendMessage()
-        );
+        input.addKeyPressListener(com.vaadin.flow.component.Key.ENTER, event -> sendMessage());
 
         add(title, conversation, input, sendButton);
         expand(conversation);
     }
 
+
     private void sendMessage() {
 
         String userText = input.getValue().trim();
-        if (userText.isEmpty()) {
-            return;
-        }
+        if (userText.isEmpty()) return;
 
-        // Display the user's message
         conversation.add(new Paragraph("You: " + userText));
-
-        // Add the user message to conversation history
         history.add(UserMessage.from(userText));
-
         input.clear();
 
         try {
-            // Send the complete conversation history
             String answer = chatService.chat(history);
+            if (answer != null && answer.startsWith("IMAGE:")) {
+                // Extract Base64 image data
+                String base64 = answer.substring("IMAGE:".length());
+                // Create a resource for Vaadin
+                Image image = new Image("data:image/png;base64," + base64, "AI-generated image");
+                // Display the generated image
+                image.setMaxWidth("512px");
+                image.setWidth("100%");
+                conversation.add(new Paragraph("Assistant: Here is your generated image:"), image);
 
-            // Save the assistant's response for future turns
-            history.add(AiMessage.from(answer));
+                // Don't store raw Base64 data in chat history
+                history.add(AiMessage.from("I generated an image based on your request."));
 
-            // Display the assistant's response
-            conversation.add(new Paragraph("Assistant: " + answer));
+            } else {
+
+                // Normal text response
+                history.add(AiMessage.from(answer));
+                conversation.add(new Paragraph("Assistant: " + answer));
+            }
 
         } catch (Exception e) {
+            e.printStackTrace();
             conversation.add(new Paragraph("Sorry, something went wrong: " + e.getMessage()));
         }
     }
+
 }

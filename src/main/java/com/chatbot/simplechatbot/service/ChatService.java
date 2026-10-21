@@ -1,5 +1,6 @@
 package com.chatbot.simplechatbot.service;
 
+import com.chatbot.simplechatbot.tool.ImageGenerationTool;
 import com.chatbot.simplechatbot.tool.TransactionTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -22,21 +23,53 @@ import java.util.List;
 public class ChatService {
 
     private static final String MODEL = "gpt-4.1-mini";
+
     private static final String SYSTEM_MESSAGE =
-            "You are a helpful assistant. "
-            + "When asked for an account's total transaction amount, "
-            + "use the get_total_amount tool. "
-            + "Do not invent transaction amounts.";
+            "You are a helpful AI assistant integrated with a database "
+                + "and an image generation service. "
+
+                + "You have access to two tools: "
+                + "get_total_amount and generate_image. "
+
+                + "DATABASE TOOL RULES: "
+                + "When the user asks about the total transaction amount "
+                + "for an account, use the get_total_amount tool. "
+                + "Pass the correct account ID as an integer. "
+                + "Never invent transaction amounts or claim that a database "
+                + "query succeeded unless the tool returns a result. "
+
+                + "IMAGE GENERATION RULES: "
+                + "When the user explicitly asks to generate, create, draw, "
+                + "or make an image or picture, use the generate_image tool. "
+                + "Convert the user's request into a clear, detailed image "
+                + "prompt when useful, while preserving their intent. "
+                + "Do not merely describe an image when the user has asked "
+                + "you to generate one. "
+                + "After the tool returns, briefly tell the user that the "
+                + "image has been generated. Do not expose Base64 image data "
+                + "as ordinary text. "
+
+                + "GENERAL CONVERSATION RULES: "
+                + "For questions, explanations, coding help, and ordinary "
+                + "conversation, answer directly without calling tools "
+                + "unless a tool is genuinely needed. "
+                + "Never claim to have generated an image or retrieved "
+                + "database information unless the corresponding tool ran "
+                + "successfully.";
 
     private static final int MAX_TOOL_ROUNDS = 5;
     private final ChatModel model;
     private final TransactionTool transactionTool;
     private final ObjectMapper objectMapper;
     private final List<ToolSpecification> toolSpecifications;
+    private final ImageGenerationTool imageGenerationTool;
 
-    public ChatService(TransactionTool transactionTool, ObjectMapper objectMapper) {
+    public ChatService(TransactionTool transactionTool, ObjectMapper objectMapper,
+                       ImageGenerationTool imageGenerationTool) {
         this.transactionTool = transactionTool;
+        this.imageGenerationTool = imageGenerationTool;
         this.objectMapper = objectMapper;
+
         String apiKey = System.getenv("OPENAI_API_KEY");
         if (apiKey == null || apiKey.isBlank()) {
             throw new IllegalStateException("OPENAI_API_KEY environment variable is not set");
@@ -45,7 +78,9 @@ public class ChatService {
                         .apiKey(apiKey)
                         .modelName(MODEL)
                         .build();
-        this.toolSpecifications = ToolSpecifications.toolSpecificationsFrom(transactionTool);
+        this.toolSpecifications = new ArrayList<>();
+        this.toolSpecifications.addAll(ToolSpecifications.toolSpecificationsFrom(transactionTool));
+        this.toolSpecifications.addAll(ToolSpecifications.toolSpecificationsFrom(imageGenerationTool));
     }
 
     public String chat(List<ChatMessage> history) {
@@ -74,7 +109,15 @@ public class ChatService {
 
             // Execute every tool requested by the model.
             for (ToolExecutionRequest toolRequest : aiMessage.toolExecutionRequests()) {
+                System.out.println(
+                        "Tool requested: " + toolRequest.name());
+                System.out.println(
+                        "Tool arguments: " + toolRequest.arguments());
                 String result = executeTool(toolRequest);
+                // Return generated images directly to the UI.
+                if (result.startsWith("IMAGE:")) {
+                    return result;
+                }
                 messages.add(ToolExecutionResultMessage.from(toolRequest, result));
             }
         }
@@ -84,21 +127,32 @@ public class ChatService {
 
     private String executeTool(ToolExecutionRequest toolRequest) {
 
-        // The @Tool annotation normally exposes the Java method name.
-        // If you configure a different tool name, update this mapping.
-        if ("getTotalAmount".equals(toolRequest.name()) || "get_total_amount".equals(toolRequest.name())) {
-            try {
-                JsonNode arguments = objectMapper.readTree(toolRequest.arguments());
-                JsonNode accountIdNode = arguments.get("accountId");
-                if (accountIdNode == null || accountIdNode.asText().isBlank()) {
-                    return "Invalid or missing account_id argument.";
+        try {
+            JsonNode arguments = objectMapper.readTree(toolRequest.arguments());
+            if ("generateImage".equals(toolRequest.name()) || "generate_image".equals(toolRequest.name())) {
+                JsonNode promptNode = arguments.get("prompt");
+                if (promptNode == null || !promptNode.isTextual() || promptNode.asText().isBlank()) {
+                    return "Invalid or missing image prompt.";
                 }
-                return transactionTool.getTotalAmount(accountIdNode.asInt());
-            } catch (Exception e) {
-                throw new IllegalStateException("Failed to execute transaction tool", e);
-            }
-        }
 
-        throw new IllegalArgumentException("Unknown tool: " + toolRequest.name());
+                String base64Image = imageGenerationTool.generateImage(promptNode.asText());
+                return "IMAGE:" + base64Image;
+            }
+
+            if ("getTotalAmount".equals(toolRequest.name()) || "get_total_amount".equals(toolRequest.name())) {
+                JsonNode accountIdNode = arguments.has("account_id") ? arguments.get("account_id")
+                        : arguments.get("accountId");
+                if (accountIdNode == null) {
+                    return "Invalid or missing account ID.";
+                }
+
+                Integer accountId = accountIdNode.isIntegralNumber() && accountIdNode.canConvertToInt()
+                        ? accountIdNode.intValue() : Integer.valueOf(accountIdNode.asText());
+                return transactionTool.getTotalAmount(accountId);
+            }
+            throw new IllegalArgumentException("Unknown tool: " + toolRequest.name());
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to execute tool: " + toolRequest.name(), e);
+        }
     }
 }
