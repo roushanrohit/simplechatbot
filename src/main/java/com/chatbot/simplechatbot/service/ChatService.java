@@ -1,5 +1,6 @@
 package com.chatbot.simplechatbot.service;
 
+import com.chatbot.simplechatbot.tool.TransactionTool;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import dev.langchain4j.agent.tool.ToolSpecifications;
@@ -88,11 +89,11 @@ public class ChatService {
         if ("getTotalAmount".equals(toolRequest.name()) || "get_total_amount".equals(toolRequest.name())) {
             try {
                 JsonNode arguments = objectMapper.readTree(toolRequest.arguments());
-                JsonNode accountIdNode = arguments.get("account_id");
-                if (accountIdNode == null || !accountIdNode.isTextual() || accountIdNode.asText().isBlank()) {
+                JsonNode accountIdNode = arguments.get("accountId");
+                if (accountIdNode == null || accountIdNode.asText().isBlank()) {
                     return "Invalid or missing account_id argument.";
                 }
-                return transactionTool.getTotalAmount(accountIdNode.asText());
+                return transactionTool.getTotalAmount(accountIdNode.asInt());
             } catch (Exception e) {
                 throw new IllegalStateException("Failed to execute transaction tool", e);
             }

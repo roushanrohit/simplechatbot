@@ -1,4 +1,4 @@
-package com.chatbot.simplechatbot.service;
+package com.chatbot.simplechatbot.tool;
 
 import dev.langchain4j.agent.tool.P;
 import dev.langchain4j.agent.tool.Tool;
@@ -17,7 +17,7 @@ public class TransactionTool {
     }
 
     @Tool("Get the total transaction amount for an account ID")
-    public String getTotalAmount(@P("Account ID for which to calculate the total transaction amount") String accountId) {
+    public String getTotalAmount(@P("Account ID for which to calculate the total transaction amount") Integer accountId) {
 
         String sql = """
                 SELECT SUM(amount) FROM transaction WHERE account_id = ?
